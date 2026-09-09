@@ -17,6 +17,7 @@ describe("resolveModel", () => {
   });
 
   test("partial match returns the first model in display order", () => {
+    expect(resolveModel(MODELS, "fable")?.id).toBe("claude-fable-5-1");
     expect(resolveModel(MODELS, "opus")?.id).toBe("claude-opus-5");
     expect(resolveModel(MODELS, "sonnet")?.id).toBe("claude-sonnet-5");
   });
@@ -30,6 +31,17 @@ describe("resolveModel", () => {
 // Pins the *measured* SDK behavior table — intentionally not derived from the
 // catalog's advertised contextWindow (see models.ts).
 describe("resolveClaudeCodeRuntimeModel", () => {
+  test("fable-5-1 and fable-5 serve 1M with the [1m] suffix", () => {
+    expect(resolveClaudeCodeRuntimeModel("claude-fable-5-1", PRO)).toEqual({
+      cliModelId: "claude-fable-5-1[1m]",
+      contextWindow: 1_000_000,
+    });
+    expect(resolveClaudeCodeRuntimeModel("claude-fable-5", PRO)).toEqual({
+      cliModelId: "claude-fable-5[1m]",
+      contextWindow: 1_000_000,
+    });
+  });
+
   test("bare opus-4-7 serves 1M; opus-5 and opus-4-8 need the [1m] suffix", () => {
     expect(resolveClaudeCodeRuntimeModel("claude-opus-5", PRO)).toEqual({
       cliModelId: "claude-opus-5[1m]",

@@ -46,7 +46,7 @@ omp -e /path/to/omp-claude-bridge/index.ts
 
 ## Provider
 
-Use `/model` to select `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-5`, `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-5`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
+Use `/model` to select `claude-bridge/claude-fable-5-1`, `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-5`, `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-5`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
 
 Behind the scenes, omp's tools are bridged to Claude Code but it should all work like normal in omp. Bash commands get a 120-second default timeout (matching Claude Code's default) since omp's bash has no timeout by default. Skills in omp are copied over to Claude Code's system prompt so should work as they would with any other omp provider.
 
@@ -109,7 +109,7 @@ Config: `~/.omp/agent/claude-bridge.json` (global) or the project's `.omp/claude
 - `appendSystemPrompt` — append omp's AGENTS.md and skills (default `true`)
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
-- `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
+- `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`. Also useful when the SDK's bundled Claude Code is older than what a model requires: Fable 5.1 needs Claude Code 2.1.251 or newer (the API answers `claude_code_version_too_old` otherwise), so point this at an up-to-date `claude` install if the bundled one is behind.
 
 ## Debugging
 

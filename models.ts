@@ -5,6 +5,7 @@
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const MODEL_IDS_IN_ORDER = [
+  "claude-fable-5-1",
   "claude-fable-5",
   "claude-opus-5",
   "claude-opus-4-8",
@@ -35,6 +36,16 @@ const MODEL_DEFS: Record<string, {
   contextWindow: number;
   maxTokens: number;
 }> = {
+  "claude-fable-5-1": {
+    id: "claude-fable-5-1",
+    name: "Claude Fable 5.1",
+    reasoning: true,
+    thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"], supportsDisplay: true },
+    input: ["text", "image"],
+    cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
   "claude-fable-5": {
     id: "claude-fable-5",
     name: "Claude Fable 5",
@@ -172,6 +183,8 @@ export function resolveClaudeCodeRuntimeModel(
         contextWindow: useOneM ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
       };
     }
+    case "claude-fable-5-1":
+      return { cliModelId: "claude-fable-5-1[1m]", contextWindow: ONE_M_CONTEXT };
     case "claude-fable-5":
       return { cliModelId: "claude-fable-5[1m]", contextWindow: ONE_M_CONTEXT };
     case "claude-sonnet-5":
