@@ -1,12 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   extractAgentsAppend,
   findAgentsMdInParents,
+  resolveAgentsMdPaths,
   sanitizeAgentsContent,
 } from "../agents-md.js";
+
+// A throwaway HOME so the tests never see the developer's real ~/.omp files.
+function makeFakeHome(): string {
+  return mkdtempSync(join(tmpdir(), "cb-home-"));
+}
 
 describe("sanitizeAgentsContent", () => {
   test("rewrites ~/.omp to ~/.claude", () => {
@@ -66,31 +72,124 @@ describe("findAgentsMdInParents", () => {
   });
 });
 
+describe("resolveAgentsMdPaths", () => {
+  test("lists the omp user-level file before the project file", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(join(home, ".omp", "agent", "AGENTS.md"), "global");
+      writeFileSync(join(root, "AGENTS.md"), "project");
+      expect(resolveAgentsMdPaths(join(root, "src"), home)).toEqual([
+        join(home, ".omp", "agent", "AGENTS.md"),
+        join(root, "AGENTS.md"),
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("still honours the legacy ~/.omp/AGENTS.md location", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      mkdirSync(join(home, ".omp"), { recursive: true });
+      writeFileSync(join(home, ".omp", "AGENTS.md"), "legacy global");
+      expect(resolveAgentsMdPaths(root, home)).toEqual([
+        join(home, ".omp", "AGENTS.md"),
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns an empty list when nothing exists", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      expect(resolveAgentsMdPaths(root, home)).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("extractAgentsAppend", () => {
   test("wraps sanitized content under a CLAUDE.md heading", () => {
+    const home = makeFakeHome();
     const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
-    const prevCwd = process.cwd();
     try {
       writeFileSync(join(root, "AGENTS.md"), "Config lives in .omp/agent.");
-      process.chdir(root);
-      expect(extractAgentsAppend()).toBe(
+      expect(extractAgentsAppend(root, home)).toBe(
         "# CLAUDE.md\n\nConfig lives in .claude/agent.",
       );
     } finally {
-      process.chdir(prevCwd);
+      rmSync(home, { recursive: true, force: true });
       rmSync(root, { recursive: true, force: true });
     }
   });
 
   test("returns undefined for an empty AGENTS.md", () => {
+    const home = makeFakeHome();
     const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
-    const prevCwd = process.cwd();
     try {
       writeFileSync(join(root, "AGENTS.md"), "   \n  ");
-      process.chdir(root);
-      expect(extractAgentsAppend()).toBeUndefined();
+      expect(extractAgentsAppend(root, home)).toBeUndefined();
     } finally {
-      process.chdir(prevCwd);
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("forwards the global file when the project has none", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(
+        join(home, ".omp", "agent", "AGENTS.md"),
+        "Delegate reading to subagents.",
+      );
+      expect(extractAgentsAppend(root, home)).toBe(
+        "# CLAUDE.md\n\nDelegate reading to subagents.",
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("concatenates global and project files, global first", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(join(home, ".omp", "agent", "AGENTS.md"), "global rules");
+      writeFileSync(join(root, "AGENTS.md"), "project rules");
+      expect(extractAgentsAppend(join(root, "nested"), home)).toBe(
+        "# CLAUDE.md\n\nglobal rules\n\n---\n\nproject rules",
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("skips an empty global file but keeps the project file", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      mkdirSync(join(home, ".omp", "agent"), { recursive: true });
+      writeFileSync(join(home, ".omp", "agent", "AGENTS.md"), "\n");
+      writeFileSync(join(root, "AGENTS.md"), "project rules");
+      expect(extractAgentsAppend(root, home)).toBe(
+        "# CLAUDE.md\n\nproject rules",
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
       rmSync(root, { recursive: true, force: true });
     }
   });
