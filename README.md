@@ -106,7 +106,7 @@ Config: `~/.omp/agent/claude-bridge.json` (global) or the project's `.omp/claude
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 5, 4.7 or 4.8.
-- `appendSystemPrompt` — append omp's AGENTS.md and skills (default `true`)
+- `appendSystemPrompt` — append omp's AGENTS.md files and skills (default `true`). The user-level `~/.omp/agent/AGENTS.md` (or the legacy `~/.omp/AGENTS.md`) is forwarded first, then the nearest `AGENTS.md` found walking up from the working directory, so a project file adds to the global one instead of replacing it.
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
