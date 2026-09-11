@@ -3,7 +3,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join, resolve } from "path";
+import { dirname, isAbsolute, join, resolve } from "path";
 
 // omp's user-level context file is ~/.omp/agent/AGENTS.md (see oh-my-pi's
 // docs/context-files.md). ~/.omp/AGENTS.md is kept for backwards compatibility
@@ -57,7 +57,11 @@ export function extractAgentsAppend(
   const parts: string[] = [];
   for (const agentsPath of resolveAgentsMdPaths(cwd, homeDir)) {
     try {
-      const content = readFileSync(agentsPath, "utf-8").trim();
+      const content = expandImports(
+        readFileSync(agentsPath, "utf-8"),
+        agentsPath,
+        homeDir,
+      ).trim();
       if (!content) continue;
       const sanitized = sanitizeAgentsContent(content);
       if (sanitized.length > 0) parts.push(sanitized);
@@ -67,6 +71,92 @@ export function extractAgentsAppend(
   }
   if (parts.length === 0) return undefined;
   return `# CLAUDE.md\n\n${parts.join("\n\n---\n\n")}`;
+}
+
+// omp expands `@path` imports in context files before injecting them (see
+// oh-my-pi's docs/context-files.md, "@ imports"). Forward the same text, or
+// Claude Code only sees the bare token. Same rules as omp: the token starts a
+// line or follows a space/tab, code spans and fences are left alone, relative
+// paths resolve from the importing file, trailing punctuation is trimmed, five
+// hops at most, and cycles or unreadable targets keep the original token.
+const MAX_IMPORT_DEPTH = 5;
+const IMPORT_TOKEN = /(^|[ \t])@([^\s`]+)/g;
+const TRAILING_PUNCTUATION = /[.,;:!?)\]}"']+$/;
+const FENCE = /^\s*(```|~~~)/;
+const CODE_SPAN = /(`+).*?\1/g;
+
+export function expandImports(
+  content: string,
+  filePath: string,
+  homeDir: string = homedir(),
+  ancestors: ReadonlySet<string> = new Set([resolve(filePath)]),
+  depth = 0,
+): string {
+  let inFence = false;
+  return content
+    .split("\n")
+    .map((line) => {
+      if (FENCE.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      const spans = [...line.matchAll(CODE_SPAN)].map((m) => {
+        const start = m.index ?? 0;
+        return [start, start + m[0].length] as const;
+      });
+      return line.replace(
+        IMPORT_TOKEN,
+        (token: string, lead: string, raw: string, offset: number) => {
+          const at = offset + lead.length;
+          if (spans.some(([start, end]) => at >= start && at < end)) {
+            return token;
+          }
+          const path = raw.replace(TRAILING_PUNCTUATION, "");
+          const imported = readImport(
+            path,
+            dirname(filePath),
+            homeDir,
+            ancestors,
+            depth,
+          );
+          return imported === undefined
+            ? token
+            : `${lead}${imported}${raw.slice(path.length)}`;
+        },
+      );
+    })
+    .join("\n");
+}
+
+function readImport(
+  path: string,
+  baseDir: string,
+  homeDir: string,
+  ancestors: ReadonlySet<string>,
+  depth: number,
+): string | undefined {
+  if (!path || depth >= MAX_IMPORT_DEPTH) return undefined;
+  const target =
+    path === "~" || path.startsWith("~/")
+      ? join(homeDir, path.slice(1))
+      : isAbsolute(path)
+        ? path
+        : resolve(baseDir, path);
+  if (ancestors.has(target)) return undefined;
+  let content: string;
+  try {
+    content = readFileSync(target, "utf-8");
+  } catch {
+    return undefined;
+  }
+  return expandImports(
+    content.trim(),
+    target,
+    homeDir,
+    new Set([...ancestors, target]),
+    depth + 1,
+  );
 }
 
 export function sanitizeAgentsContent(content: string): string {
