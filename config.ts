@@ -2,7 +2,7 @@
 // Loaded once at extension registration from ~/.omp/agent/claude-bridge.json and
 // the project .omp/claude-bridge.json, project overriding global.
 
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { SettingSource, Settings } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -22,6 +22,10 @@ export interface Config {
   provider?: {
     appendSystemPrompt?: boolean;
     settingSources?: SettingSource[];
+    /** Extra Claude Code settings for the spawned CLI, layered over the user's
+     *  own. E.g. `claudeMdExcludes` skips a CLAUDE.md whose content the bridge
+     *  already forwards through AGENTS.md. */
+    settings?: Settings;
     strictMcpConfig?: boolean;
     pathToClaudeCodeExecutable?: string;
     plan?: "pro" | "max";

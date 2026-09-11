@@ -269,6 +269,7 @@ export function createStreamClaudeAgentSdk(
       runtime.providerSettings.strictMcpConfig !== false;
     const claudeExecutable =
       runtime.providerSettings.pathToClaudeCodeExecutable;
+    const cliSettings = runtime.providerSettings.settings;
 
     const effort = options?.reasoning
       ? ((model.thinkingLevelMap?.[options.reasoning] as
@@ -300,6 +301,7 @@ export function createStreamClaudeAgentSdk(
       extraArgs,
       ...(effort ? { effort } : {}),
       ...(settingSources ? { settingSources } : {}),
+      ...(cliSettings ? { settings: cliSettings } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(claudeExecutable
