@@ -37,6 +37,40 @@ describe("extractSkillsBlock", () => {
   });
 });
 
+const OMP_SKILLS_PROMPT = [
+  "§ Runtime",
+  "# Skills & Rules",
+  "Matching skill → MUST read `skill://<name>` first.",
+  "<skills>",
+  "- impeccable: frontend design",
+  "- user-coding-style: personal code conventions",
+  "</skills>",
+  "",
+  "# Next section",
+].join("\n");
+
+describe("extractSkillsBlock (omp 18 format)", () => {
+  test("forwards the <skills> block with skill:// loading instructions", () => {
+    const block = extractSkillsBlock(OMP_SKILLS_PROMPT)!;
+    expect(block).toContain("- impeccable: frontend design");
+    expect(block).toContain("- user-coding-style: personal code conventions");
+    expect(block).toContain("mcp__custom-tools__read");
+    expect(block).toContain("`skill://<name>`");
+    expect(block.endsWith("</skills>")).toBe(true);
+    expect(block).not.toContain("# Next section");
+  });
+
+  test("ignores <skills> tags that are not on their own lines", () => {
+    expect(
+      extractSkillsBlock("Mention <skills>\n- a\n</skills> in prose"),
+    ).toBeUndefined();
+  });
+
+  test("returns undefined for an empty block", () => {
+    expect(extractSkillsBlock("<skills>\n</skills>")).toBeUndefined();
+  });
+});
+
 describe("rewriteSkillsBlock", () => {
   test("leaves blocks without the read-tool sentence unchanged", () => {
     expect(rewriteSkillsBlock("plain block")).toBe("plain block");
