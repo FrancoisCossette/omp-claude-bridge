@@ -17,15 +17,33 @@ export function globalAgentsMdPaths(homeDir: string = homedir()): string[] {
 
 /** Every AGENTS.md that should reach Claude Code, global first, then the
  *  nearest project file. omp itself layers user-level and project-level
- *  context the same way, so a project AGENTS.md must not shadow the global one. */
+ *  context the same way, so a project AGENTS.md must not shadow the global one.
+ *  A project AGENTS.md imported by its sibling CLAUDE.md is skipped: Claude
+ *  Code loads that CLAUDE.md itself, so forwarding it would duplicate it. */
 export function resolveAgentsMdPaths(
   cwd: string = process.cwd(),
   homeDir: string = homedir(),
 ): string[] {
   const paths = globalAgentsMdPaths(homeDir).filter((p) => existsSync(p));
   const fromCwd = findAgentsMdInParents(cwd);
-  if (fromCwd && !paths.includes(fromCwd)) paths.push(fromCwd);
+  if (fromCwd && !paths.includes(fromCwd) && !isImportedBySiblingClaudeMd(fromCwd)) {
+    paths.push(fromCwd);
+  }
   return paths;
+}
+
+// `@AGENTS.md` or `@./AGENTS.md` at a line start or after whitespace, the way
+// Claude Code recognizes an import; a token inside backticks does not match.
+const AGENTS_MD_IMPORT = /(^|[ \t])@(\.\/)?AGENTS\.md(?=[\s.,;:!?)\]}"']|$)/m;
+
+function isImportedBySiblingClaudeMd(agentsMdPath: string): boolean {
+  const claudeMdPath = join(dirname(agentsMdPath), "CLAUDE.md");
+  if (!existsSync(claudeMdPath)) return false;
+  try {
+    return AGENTS_MD_IMPORT.test(readFileSync(claudeMdPath, "utf-8"));
+  } catch {
+    return false;
+  }
 }
 
 /** @deprecated Use resolveAgentsMdPaths; kept for callers that want one path. */
