@@ -31,7 +31,7 @@ Supporting modules (pure or near-pure, unit-tested in `test/`):
 - `models.ts` — hand-copied model catalog (from oh-my-pi's `models.json` anthropic entries at port time, zero import dependency on the catalog package) plus 1M-context eligibility logic.
 - `config.ts` — `Config` type + loader for `~/.omp/agent/claude-bridge.json` / `.omp/claude-bridge.json`.
 - `agents-md.ts` — finds and sanitizes AGENTS.md for forwarding to Claude Code as `CLAUDE.md`.
-- `skills.ts` — extracts the `<available_skills>` block from omp's system prompt for forwarding; MCP naming constants.
+- `skills.ts` — extracts the skills listing from the system prompt for forwarding (pi's `<available_skills>` block, or omp 18's `<skills>` block with `skill://` loading instructions); MCP naming constants.
 - `query-state.ts` — `QueryContext`, the per-query mutable state container, plus a stack for isolated/nested queries.
 - `extract-tool-results.ts` — walks context tail to collect a turn's tool results as MCP content blocks.
 - `typebox-to-zod.ts` — converts TypeBox/JSON-Schema tool params to Zod (Claude Agent SDK's MCP server wants Zod shapes).
