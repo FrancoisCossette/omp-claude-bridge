@@ -116,6 +116,32 @@ describe("resolveAgentsMdPaths", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("skips a project AGENTS.md that the sibling CLAUDE.md imports", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      writeFileSync(join(root, "AGENTS.md"), "project");
+      writeFileSync(join(root, "CLAUDE.md"), "@AGENTS.md\n");
+      expect(resolveAgentsMdPaths(join(root, "src"), home)).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps a project AGENTS.md that CLAUDE.md only mentions in code", () => {
+    const home = makeFakeHome();
+    const root = mkdtempSync(join(tmpdir(), "cb-agents-"));
+    try {
+      writeFileSync(join(root, "AGENTS.md"), "project");
+      writeFileSync(join(root, "CLAUDE.md"), "Other rules; see `@AGENTS.md`.\n");
+      expect(resolveAgentsMdPaths(root, home)).toEqual([join(root, "AGENTS.md")]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("expandImports", () => {
