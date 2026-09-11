@@ -234,6 +234,39 @@ describe("fresh query", () => {
     expect(queryCalls[0].options?.extraArgs?.model).toBe("claude-opus-4-7");
   });
 
+  test("forwards configured Claude Code settings to the SDK", async () => {
+    const queryFn = recordingQueryFn(
+      [[sysInit("sess-bbbb3333"), resultSuccess("ok")]],
+      handles,
+      queryCalls,
+    );
+    runtime = makeRuntime(queryFn);
+    runtime.providerSettings = {
+      settings: { claudeMdExcludes: ["/home/me/.claude/CLAUDE.md"] },
+    };
+    await collect(
+      createStreamClaudeAgentSdk(runtime)(MODEL, makeContext([user("hi")])),
+    );
+
+    expect(queryCalls[0].options?.settings).toEqual({
+      claudeMdExcludes: ["/home/me/.claude/CLAUDE.md"],
+    });
+  });
+
+  test("passes no settings when none are configured", async () => {
+    const queryFn = recordingQueryFn(
+      [[sysInit("sess-bbbb4444"), resultSuccess("ok")]],
+      handles,
+      queryCalls,
+    );
+    runtime = makeRuntime(queryFn);
+    await collect(
+      createStreamClaudeAgentSdk(runtime)(MODEL, makeContext([user("hi")])),
+    );
+
+    expect(queryCalls[0].options?.settings).toBeUndefined();
+  });
+
   test("commits the captured session id after a successful query", async () => {
     const queryFn = recordingQueryFn(
       [[sysInit("sess-cccc3333"), resultSuccess("done")]],
