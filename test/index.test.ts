@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import * as os from "os";
 import { join } from "path";
 import registerExtension from "../index.js";
 import { PROVIDER_ID } from "../convert.js";
@@ -38,9 +38,16 @@ let cwd: string;
 let prevHome: string | undefined;
 let prevCwd: string;
 
+// bun snapshots HOME when the process starts, so os.homedir() ignores the
+// process.env.HOME set below and loadConfig would read the machine's real
+// ~/.omp/agent/claude-bridge.json — one with askClaude disabled is enough to
+// fail the registration tests. The mock hands the extension the temp home;
+// the env var stays for the code that reads HOME directly.
+mock.module("os", () => ({ ...os, homedir: () => home }));
+
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "cb-home-"));
-  cwd = mkdtempSync(join(tmpdir(), "cb-cwd-"));
+  home = mkdtempSync(join(os.tmpdir(), "cb-home-"));
+  cwd = mkdtempSync(join(os.tmpdir(), "cb-cwd-"));
   prevHome = process.env.HOME;
   process.env.HOME = home;
   prevCwd = process.cwd();
