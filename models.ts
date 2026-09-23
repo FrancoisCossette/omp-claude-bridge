@@ -1,5 +1,6 @@
 // Canonical selection + display order for the model picker.
-// `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
+// `resolveModel` takes an exact id anywhere in the list, otherwise the first partial
+// match, so `opus` resolves to the first-listed opus entry.
 // Ported from pi-claude-bridge; model metadata sourced from oh-my-pi catalog (models.json anthropic entries).
 
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
@@ -7,6 +8,7 @@ import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 export const MODEL_IDS_IN_ORDER = [
   "claude-fable-5-1",
   "claude-fable-5",
+  "claude-opus-5-5",
   "claude-opus-5",
   "claude-opus-4-8",
   "claude-opus-4-7",
@@ -53,6 +55,16 @@ const MODEL_DEFS: Record<string, {
     thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"], supportsDisplay: true },
     input: ["text", "image"],
     cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+    contextWindow: 1_000_000,
+    maxTokens: 128_000,
+  },
+  "claude-opus-5-5": {
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    reasoning: true,
+    thinking: { mode: "anthropic-adaptive", efforts: ["low", "medium", "high", "xhigh", "max"], supportsDisplay: true },
+    input: ["text", "image"],
+    cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
     contextWindow: 1_000_000,
     maxTokens: 128_000,
   },
@@ -170,6 +182,8 @@ export function resolveClaudeCodeRuntimeModel(
   settings: LongContextSettings,
 ): ClaudeCodeRuntimeModel {
   switch (modelId) {
+    case "claude-opus-5-5":
+      return { cliModelId: "claude-opus-5-5[1m]", contextWindow: ONE_M_CONTEXT };
     case "claude-opus-5":
       return { cliModelId: "claude-opus-5[1m]", contextWindow: ONE_M_CONTEXT };
     case "claude-opus-4-8":
@@ -220,7 +234,10 @@ export function resolveModel<T extends { id: string }>(
   input: string,
 ): T | undefined {
   const lower = input.toLowerCase();
-  return models.find((m) => m.id === lower || m.id.includes(lower));
+  // An exact id is looked up across the whole list before display order decides:
+  // "claude-opus-5" is a substring of the newer "claude-opus-5-5" listed above it,
+  // and would otherwise be unreachable by its own id.
+  return models.find((m) => m.id === lower) ?? models.find((m) => m.id.includes(lower));
 }
 
 // Produce the model metadata registered with pi. The registered contextWindow must
