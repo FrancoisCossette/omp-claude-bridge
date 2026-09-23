@@ -16,8 +16,12 @@ describe("resolveModel", () => {
     expect(resolveModel(MODELS, "claude-haiku-4-5")?.id).toBe("claude-haiku-4-5");
   });
 
+  test("an exact id wins over an earlier model containing it", () => {
+    expect(resolveModel(MODELS, "claude-opus-5")?.id).toBe("claude-opus-5");
+  });
+
   test("partial match returns the first model in display order", () => {
-    expect(resolveModel(MODELS, "opus")?.id).toBe("claude-opus-5");
+    expect(resolveModel(MODELS, "opus")?.id).toBe("claude-opus-5-5");
     expect(resolveModel(MODELS, "sonnet")?.id).toBe("claude-sonnet-5");
   });
 
@@ -30,7 +34,11 @@ describe("resolveModel", () => {
 // Pins the *measured* SDK behavior table — intentionally not derived from the
 // catalog's advertised contextWindow (see models.ts).
 describe("resolveClaudeCodeRuntimeModel", () => {
-  test("bare opus-4-7 serves 1M; opus-5 and opus-4-8 need the [1m] suffix", () => {
+  test("bare opus-4-7 serves 1M; opus-5.5, opus-5 and opus-4-8 need the [1m] suffix", () => {
+    expect(resolveClaudeCodeRuntimeModel("claude-opus-5-5", PRO)).toEqual({
+      cliModelId: "claude-opus-5-5[1m]",
+      contextWindow: 1_000_000,
+    });
     expect(resolveClaudeCodeRuntimeModel("claude-opus-5", PRO)).toEqual({
       cliModelId: "claude-opus-5[1m]",
       contextWindow: 1_000_000,
