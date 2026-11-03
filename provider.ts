@@ -174,7 +174,7 @@ export function createStreamClaudeAgentSdk(
         }
       }
 
-      sessions.advanceCursor(context.messages.length);
+      if (!resultCtx.ephemeral) sessions.advanceCursor(context.messages.length);
       resultCtx.latestCursor = Math.max(
         resultCtx.latestCursor,
         context.messages.length,
@@ -219,12 +219,30 @@ export function createStreamClaudeAgentSdk(
       resolveMcpTools(context, runtime.askClaudeToolName);
     const cwd =
       (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-    const syncResult = sessions.sync(
-      context.messages,
-      cwd,
-      customToolNameToSdk,
-      model.id,
-    );
+    const ompSessionId = (options as { sessionId?: string } | undefined)
+      ?.sessionId;
+    const isSideChannel =
+      typeof ompSessionId === "string" && ompSessionId.includes(":side:");
+    if (
+      !isSideChannel &&
+      ompSessionId &&
+      sessions.current?.ompSessionId &&
+      sessions.current.ompSessionId !== ompSessionId
+    ) {
+      debug(
+        `provider: OMP session id changed (${sessions.current.ompSessionId} → ${ompSessionId}, e.g. /clear): dropping shared session ${sessions.current.sessionId.slice(0, 8)}`,
+      );
+      sessions.clear();
+    }
+    const syncResult = isSideChannel
+      ? sessions.syncEphemeral(
+          context.messages,
+          cwd,
+          customToolNameToSdk,
+          model.id,
+        )
+      : sessions.sync(context.messages, cwd, customToolNameToSdk, model.id);
+    queryCtx.ephemeral = Boolean(syncResult.preserveSharedSession);
     const { sessionId: resumeSessionId } = syncResult;
     const promptBlocks = extractUserPromptBlocks(context.messages);
     let promptText = extractUserPrompt(context.messages) ?? "";
@@ -415,7 +433,7 @@ export function createStreamClaudeAgentSdk(
           debug(
             `provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`,
           );
-          sessions.commit(sessionId, cursor, cwd);
+          sessions.commit(sessionId, cursor, cwd, ompSessionId);
         }
 
         // Replay deferred user messages as continuation queries
@@ -465,7 +483,12 @@ export function createStreamClaudeAgentSdk(
               );
               const sid = contSid ?? sessions.current?.sessionId;
               if (sid) {
-                sessions.commit(sid, sessions.current?.cursor ?? 0, cwd);
+                sessions.commit(
+                  sid,
+                  sessions.current?.cursor ?? 0,
+                  cwd,
+                  sessions.current?.ompSessionId ?? ompSessionId,
+                );
               }
             } catch (contError) {
               debug(`provider: continuation query error:`, contError);
