@@ -23,6 +23,8 @@ export class QueryContext {
   turnToolCallIds: string[] = [];
   nextHandlerIdx = 0;
   deferredUserMessages: string[] = [];
+  /** Query runs on a throwaway Claude session; must not move the shared cursor. */
+  ephemeral = false;
 
   // Per-turn (reset together)
   turnOutput: AssistantMessage | null = null;

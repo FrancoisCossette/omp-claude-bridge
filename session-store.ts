@@ -20,6 +20,8 @@ export interface SessionState {
   cwd: string;
   needsRebuild?: boolean;
   forceRotate?: boolean;
+  /** OMP provider session id this Claude session belongs to (rotated by /clear). */
+  ompSessionId?: string;
 }
 
 export interface SyncResult {
@@ -137,8 +139,38 @@ export class SessionStore {
   }
 
   /** Record the session a completed query ended on. */
-  commit(sessionId: string, cursor: number, cwd: string): void {
-    this.state = { sessionId, cursor, cwd };
+  commit(
+    sessionId: string,
+    cursor: number,
+    cwd: string,
+    ompSessionId?: string,
+  ): void {
+    this.state = { sessionId, cursor, cwd, ompSessionId };
+  }
+
+  /** Side-channel call: own throwaway session built from the context, shared state untouched. */
+  syncEphemeral(
+    messages: Context["messages"],
+    cwd: string,
+    customToolNameToSdk?: Map<string, string>,
+    modelId?: string,
+  ): SyncResult {
+    const priorMessages = messages.slice(0, -1);
+    if (priorMessages.length === 0) {
+      debug(`Side-channel: clean start, shared session untouched`);
+      return { sessionId: null, preserveSharedSession: true };
+    }
+    const session = createSession({
+      projectPath: cwd,
+      claudeDir: process.env.CLAUDE_CONFIG_DIR,
+      ...(modelId ? { model: modelId } : {}),
+    });
+    convertAndImportMessages(session, priorMessages, customToolNameToSdk);
+    session.save();
+    debug(
+      `Side-channel: ${priorMessages.length} prior messages → throwaway session ${session.sessionId.slice(0, 8)}, shared session untouched`,
+    );
+    return { sessionId: session.sessionId, preserveSharedSession: true };
   }
 
   sync(
