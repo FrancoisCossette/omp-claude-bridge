@@ -23,7 +23,8 @@ import {
   extractAllToolResults as _extractAllToolResults,
   type McpResult,
 } from "./extract-tool-results.js";
-import { QueryContext, ctx } from "./query-state.js";
+import { QueryContext, ctx, replaceContext } from "./query-state.js";
+import { latestHistoryRewrite } from "./session-store.js";
 import {
   buildMcpServers,
   contextForToolResults,
@@ -51,6 +52,14 @@ const newAssistantMessageEventStream: () => AssistantMessageEventStream =
     ? (_piAi.createAssistantMessageEventStream as () => AssistantMessageEventStream)
     : () =>
         new (_piAi.AssistantMessageEventStream as new () => AssistantMessageEventStream)();
+
+/**
+ * Prompt of a query restarted after omp compacted its history mid-run. The
+ * session ends on the tool results the old query was waiting for; Claude Code
+ * still needs a user turn to start.
+ */
+export const COMPACTION_RESUME_PROMPT =
+  "<system-reminder>The conversation history was compacted while you were working. The tool result above is the latest one. Continue the task from where you left off; do not redo finished steps.</system-reminder>";
 
 export type StreamSimpleFn = (
   model: Model<Api>,
@@ -128,8 +137,51 @@ export function createStreamClaudeAgentSdk(
       );
     }
 
+    // --- Restart after a mid-run history rewrite ---
+    // omp compacted its history between two provider calls of a run. Handing
+    // these tool results to the running Claude Code query would keep its full
+    // context: the compaction would change nothing for Claude, and omp would
+    // compact again on every call. Stop that query instead and start a new one
+    // on a Claude session rebuilt from the compacted history.
+    const contextRewriteAt = latestHistoryRewrite(context.messages);
+    const restartFrom =
+      resultCtx &&
+      !resultCtx.ephemeral &&
+      contextRewriteAt !== undefined &&
+      contextRewriteAt > (resultCtx.builtRewriteAt ?? Number.NEGATIVE_INFINITY)
+        ? resultCtx
+        : undefined;
+    let restartWasMain = false;
+    let carriedUserMessages: string[] = [];
+    if (restartFrom) {
+      restartWasMain = ctx() === restartFrom;
+      const oldQuery = restartFrom.activeQuery as Query | null;
+      debug(
+        `provider: omp rewrote its history mid-run (historyRewriteAt=${contextRewriteAt}, query built with ${restartFrom.builtRewriteAt ?? "none"}): restarting the query, ${restartFrom.pendingToolCalls.size} waiting handlers, ctx.msgs=${context.messages.length}`,
+      );
+      restartFrom.superseded = true;
+      carriedUserMessages = restartFrom.deferredUserMessages;
+      restartFrom.deferredUserMessages = [];
+      restartFrom.currentPiStream = null;
+      for (const pending of restartFrom.pendingToolCalls.values()) {
+        pending.resolve({
+          content: [
+            { type: "text", text: "Superseded: history compacted, query restarted" },
+          ],
+        });
+      }
+      restartFrom.pendingToolCalls.clear();
+      restartFrom.pendingResults.clear();
+      restartFrom.activeQuery = null;
+      activeQueryContexts.delete(restartFrom);
+      void oldQuery?.interrupt().catch(() => {});
+      try {
+        oldQuery?.close();
+      } catch {}
+    }
+
     // --- Tool result delivery ---
-    if (resultCtx) {
+    if (resultCtx && !restartFrom) {
       claimCurrentPiStream(stream, "tool-result", resultCtx);
       resultCtx.resetTurnState(model);
       debug(
@@ -192,7 +244,7 @@ export function createStreamClaudeAgentSdk(
 
     // --- Orphaned tool result ---
     const lastMsg = context.messages[context.messages.length - 1];
-    if (lastMsg?.role === "toolResult") {
+    if (!restartFrom && lastMsg?.role === "toolResult") {
       debug(`provider: orphaned tool result after abort, emitting end_turn`);
       sessions.advanceCursor(context.messages.length);
       const c = ctx();
@@ -210,18 +262,23 @@ export function createStreamClaudeAgentSdk(
     }
 
     // --- Fresh query ---
-    const isReentrant = activeQuery;
-    const queryCtx = isReentrant ? new QueryContext() : ctx();
+    // A restarted query takes the old one's place: the main context when the
+    // old query was the main one, so deferred user messages still replay.
+    const isReentrant = restartFrom ? !restartWasMain : activeQuery;
+    const queryCtx =
+      restartFrom || isReentrant ? new QueryContext() : ctx();
+    if (restartFrom && restartWasMain) replaceContext(restartFrom, queryCtx);
     debug(
-      `provider: fresh query setup, isReentrant=${isReentrant}, activeContexts=${activeQueryContexts.size}`,
+      `provider: fresh query setup, isReentrant=${isReentrant}, restart=${Boolean(restartFrom)}, activeContexts=${activeQueryContexts.size}`,
     );
 
     claimCurrentPiStream(stream, "fresh-query", queryCtx);
     queryCtx.pendingToolCalls.clear();
     queryCtx.pendingResults.clear();
-    queryCtx.deferredUserMessages = [];
+    queryCtx.deferredUserMessages = carriedUserMessages;
     queryCtx.resetTurnState(model);
     queryCtx.latestCursor = 0;
+    queryCtx.builtRewriteAt = contextRewriteAt;
 
     const { mcpTools, customToolNameToSdk, customToolNameToPi } =
       resolveMcpTools(context, runtime.askClaudeToolName);
@@ -244,11 +301,23 @@ export function createStreamClaudeAgentSdk(
           // open elsewhere (a subagent's) makes every main call look reentrant.
           // The rebuild goes to a new session, so it never races that query.
           detectHistoryRewrite: true,
+          // Restarted on tool results: they go into the new session, and the
+          // query starts on COMPACTION_RESUME_PROMPT. Restarted on a user
+          // message (a steer came with the results): that message is the
+          // prompt, as for any fresh query.
+          restartAfterRewrite:
+            Boolean(restartFrom) && lastMsgRole === "toolResult",
         });
     queryCtx.ephemeral = Boolean(syncResult.preserveSharedSession);
     const { sessionId: resumeSessionId } = syncResult;
-    const promptBlocks = extractUserPromptBlocks(context.messages);
-    let promptText = extractUserPrompt(context.messages) ?? "";
+    const resumeAfterRewrite =
+      Boolean(restartFrom) && lastMsgRole === "toolResult";
+    const promptBlocks = resumeAfterRewrite
+      ? null
+      : extractUserPromptBlocks(context.messages);
+    let promptText = resumeAfterRewrite
+      ? COMPACTION_RESUME_PROMPT
+      : (extractUserPrompt(context.messages) ?? "");
 
     if (!promptText && !promptBlocks) {
       diagDump("empty_prompt", {
@@ -386,6 +455,12 @@ export function createStreamClaudeAgentSdk(
         debug(
           `provider: consumeQuery completed, stopReason=${queryCtx.turnOutput?.stopReason}, error=${queryCtx.turnOutput?.errorMessage}, aborted=${wasAborted}`,
         );
+        if (queryCtx.superseded) {
+          debug(
+            `provider: superseded query ended (session ${capturedSessionId?.slice(0, 8) ?? "?"}), state left to the restarted one`,
+          );
+          return;
+        }
 
         if (wasAborted || options?.signal?.aborted) {
           sessions.markAborted();
@@ -444,7 +519,8 @@ export function createStreamClaudeAgentSdk(
           while (
             queryCtx.deferredUserMessages.length > 0 &&
             !isReentrant &&
-            !wasAborted
+            !wasAborted &&
+            !queryCtx.superseded
           ) {
             const steerPrompt = queryCtx.deferredUserMessages.shift()!;
             debug(
@@ -484,6 +560,8 @@ export function createStreamClaudeAgentSdk(
                 queryCtx,
                 notifyHook,
               );
+              // Restarted while this continuation ran: its session is stale.
+              if (queryCtx.superseded) break;
               const sid = contSid ?? sessions.current?.sessionId;
               if (sid) {
                 sessions.commit(
@@ -501,8 +579,9 @@ export function createStreamClaudeAgentSdk(
             }
           }
         } finally {
-          queryCtx.activeQuery = sdkQuery;
+          queryCtx.activeQuery = queryCtx.superseded ? null : sdkQuery;
         }
+        if (queryCtx.superseded) return;
 
         if (!isReentrant && queryCtx.activeQuery === sdkQuery) {
           debug(
@@ -517,6 +596,9 @@ export function createStreamClaudeAgentSdk(
           `provider: query error, model=${cliModel}, aborted=${Boolean(options?.signal?.aborted)}, error=`,
           error,
         );
+        // Interrupted on purpose for a restart: the error is expected, and
+        // clearing or marking the session would hit the restarted query's.
+        if (queryCtx.superseded) return;
         if (wasAborted || options?.signal?.aborted) {
           sessions.markAborted();
         } else {

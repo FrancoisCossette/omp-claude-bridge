@@ -9,7 +9,9 @@ import type {
   SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { createStreamClaudeAgentSdk } from "../provider.js";
+import { COMPACTION_RESUME_PROMPT, createStreamClaudeAgentSdk } from "../provider.js";
+import { getSessionPath } from "cc-session-io";
+import { readFileSync } from "fs";
 import { SessionRegistry } from "../session-store.js";
 import { ctx, resetStack } from "../query-state.js";
 import type { McpResult } from "../extract-tool-results.js";
@@ -690,3 +692,132 @@ describe("several omp sessions in one process (main + subagents)", () => {
     expect(runtime.sessions.for("omp-sub").current?.sessionId).toBe("sess-sub");
   });
 });
+
+describe("omp compacted its history mid-run (tool results after a rewrite)", () => {
+  const opts = (sessionId: string, signal?: AbortSignal) =>
+    ({ sessionId, ...(signal ? { signal } : {}) }) as unknown as SimpleStreamOptions;
+  const summary = (text: string, historyRewriteAt: number) =>
+    ({
+      role: "user",
+      content: [{ type: "text", text: `<summary>\n${text}\n</summary>` }],
+      attribution: "agent",
+      historyRewriteAt,
+      timestamp: historyRewriteAt,
+    }) as unknown as Messages[number];
+  const callsRead = (id: string) =>
+    ({
+      role: "assistant",
+      content: [{ type: "toolCall", id, name: "read", arguments: { path: "part02.txt" } }],
+      provider: "claude-bridge",
+      timestamp: Date.now(),
+    }) as unknown as Messages[number];
+  const compacted = [
+    summary("the code word is HERON", 1000),
+    callsRead("tc-1"),
+    toolResult("tc-1", "file contents"),
+  ] as Messages;
+
+  /** Starts a query (held in flight) with one tool handler waiting on tc-1. */
+  async function runningQuery(scripts: SDKMessage[][], first: Messages) {
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseGate = r;
+    });
+    runtime = makeRuntime(recordingQueryFn(scripts, handles, queryCalls, gate));
+    const stream = createStreamClaudeAgentSdk(runtime);
+    const firstStream = stream(MODEL, makeContext(first), opts("omp-1"));
+    await Promise.resolve();
+    const oldCtx = ctx();
+    let handlerResult: McpResult | undefined;
+    oldCtx.pendingToolCalls.set("tc-1", {
+      toolName: "mcp__custom-tools__read",
+      resolve: (r) => {
+        handlerResult = r;
+      },
+    });
+    return { stream, firstStream, oldCtx, releaseGate, handlerResult: () => handlerResult };
+  }
+
+  test("restarts the query on a new session rebuilt from the compacted history", async () => {
+    const run = await runningQuery(
+      [[sysInit("sess-old")], [sysInit("sess-new"), resultSuccess("next")]],
+      [user("start")],
+    );
+
+    const events = await collect(run.stream(MODEL, makeContext(compacted), opts("omp-1")));
+
+    expect(queryCalls).toHaveLength(2);
+    expect(handles[0].interruptCalls).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(run.handlerResult())).toContain("Superseded");
+    expect(run.oldCtx.superseded).toBe(true);
+    expect(ctx()).not.toBe(run.oldCtx);
+    expect(queryCalls[1].prompt).toBe(COMPACTION_RESUME_PROMPT);
+    const resume = queryCalls[1].options?.resume as string;
+    expect(resume).toBeDefined();
+    const jsonl = readFileSync(getSessionPath(resume, process.cwd(), claudeDir), "utf8");
+    expect(jsonl).toContain("HERON");
+    expect(jsonl).toContain("file contents");
+    expect(events.at(-1)!.type).toBe("done");
+    expect(runtime.sessions.for("omp-1").current?.sessionId).toBe("sess-new");
+    expect(runtime.sessions.for("omp-1").current?.rewriteAt).toBe(1000);
+
+    // The old query ending afterwards changes nothing.
+    run.releaseGate();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(runtime.sessions.for("omp-1").current?.sessionId).toBe("sess-new");
+  });
+
+  test("tool results without a newer rewrite still go to the running query", async () => {
+    const before = [summary("the code word is HERON", 1000), user("start")] as Messages;
+    const run = await runningQuery([[sysInit("sess-old")]], before);
+
+    run.stream(
+      MODEL,
+      makeContext([...before, callsRead("tc-1"), toolResult("tc-1", "file contents")]),
+      opts("omp-1"),
+    );
+
+    expect(queryCalls).toHaveLength(1);
+    expect(JSON.stringify(run.handlerResult())).toContain("file contents");
+    expect(run.oldCtx.superseded).toBe(false);
+    run.releaseGate();
+  });
+
+  test("a steer waiting on the old query is replayed after the restarted one", async () => {
+    const run = await runningQuery(
+      [
+        [sysInit("sess-old")],
+        [sysInit("sess-new"), resultSuccess("next")],
+        [sysInit("sess-new"), resultSuccess("steered")],
+      ],
+      [user("start")],
+    );
+    run.oldCtx.deferredUserMessages.push("also check part03");
+
+    await collect(run.stream(MODEL, makeContext(compacted), opts("omp-1")));
+
+    expect(queryCalls).toHaveLength(3);
+    expect(queryCalls[2].prompt).toBe("also check part03");
+    expect(queryCalls[2].options?.resume).toBe("sess-new");
+    run.releaseGate();
+  });
+
+  test("an abort during the restart ends the turn as aborted", async () => {
+    const run = await runningQuery(
+      [[sysInit("sess-old")], [sysInit("sess-new"), resultSuccess("next")]],
+      [user("start")],
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    const events = await collect(
+      run.stream(MODEL, makeContext(compacted), opts("omp-1", controller.signal)),
+    );
+
+    expect(handles[0].interruptCalls).toBeGreaterThanOrEqual(1);
+    expect(events.at(-1)!.type).toBe("error");
+    expect(events.at(-1)!.reason).toBe("aborted");
+    run.releaseGate();
+  });
+});
+

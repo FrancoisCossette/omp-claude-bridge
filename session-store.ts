@@ -43,6 +43,12 @@ export interface SyncOptions {
    * it is safe even while another query still writes that file.
    */
   detectHistoryRewrite?: boolean;
+  /**
+   * Restart of a query after omp compacted its history mid-run: always build a
+   * new Claude session (never resume the old one), from every message,
+   * including the trailing tool results the old query was waiting for.
+   */
+  restartAfterRewrite?: boolean;
 }
 
 /** Latest `historyRewriteAt` omp stamped on a user message, if any. */
@@ -270,15 +276,19 @@ export class SessionStore {
     modelId?: string,
     options?: SyncOptions,
   ): SyncResult {
-    const priorMessages = messages.slice(0, -1);
+    const restart = options?.restartAfterRewrite === true;
+    // A restart has no prompt message of its own: the trailing tool results
+    // belong in the session.
+    const priorMessages = restart ? messages : messages.slice(0, -1);
     const rewriteAt = latestHistoryRewrite(priorMessages);
     // omp compacted (or summarized a branch) after the Claude session was
     // built: neither resuming it nor a clean start would carry the summary.
     const historyRewritten =
-      options?.detectHistoryRewrite === true &&
       this.state !== null &&
-      rewriteAt !== undefined &&
-      rewriteAt > (this.state.rewriteAt ?? Number.NEGATIVE_INFINITY);
+      (restart ||
+        (options?.detectHistoryRewrite === true &&
+          rewriteAt !== undefined &&
+          rewriteAt > (this.state.rewriteAt ?? Number.NEGATIVE_INFINITY)));
 
     // REUSE path
     if (
