@@ -22,11 +22,42 @@ export interface SessionState {
   forceRotate?: boolean;
   /** OMP provider session id this Claude session belongs to (rotated by /clear). */
   ompSessionId?: string;
+  /**
+   * Latest `historyRewriteAt` among the messages the Claude session was built
+   * from. omp stamps it on the user message that carries a compaction or
+   * branch summary; a newer stamp in the context means omp rewrote its history
+   * after this session was built.
+   */
+  rewriteAt?: number;
 }
 
 export interface SyncResult {
   sessionId: string | null;
   preserveSharedSession?: boolean;
+}
+
+export interface SyncOptions {
+  /**
+   * Rebuild when omp rewrote its history since the Claude session was built.
+   * The rebuild goes to a new Claude session and leaves the old file alone, so
+   * it is safe even while another query still writes that file.
+   */
+  detectHistoryRewrite?: boolean;
+}
+
+/** Latest `historyRewriteAt` omp stamped on a user message, if any. */
+export function latestHistoryRewrite(
+  messages: Context["messages"],
+): number | undefined {
+  let latest: number | undefined;
+  for (const m of messages) {
+    const stamp = (m as { role?: string; historyRewriteAt?: unknown })
+      .historyRewriteAt;
+    if (m.role === "user" && typeof stamp === "number") {
+      latest = latest === undefined ? stamp : Math.max(latest, stamp);
+    }
+  }
+  return latest;
 }
 
 export type NotifyFn = (message: string, level: "warning" | "error") => void;
@@ -138,14 +169,21 @@ export class SessionStore {
     if (this.state) this.state.cursor = cursor;
   }
 
-  /** Record the session a completed query ended on. */
+  /**
+   * Record the session a completed query ended on. Keeps what the query could
+   * not change: the history rewrite the session was built from, and a rebuild
+   * requested while it ran (omp compacted mid-run).
+   */
   commit(
     sessionId: string,
     cursor: number,
     cwd: string,
     ompSessionId?: string,
   ): void {
+    const prev = this.state;
     this.state = { sessionId, cursor, cwd, ompSessionId };
+    if (prev?.rewriteAt !== undefined) this.state.rewriteAt = prev.rewriteAt;
+    if (prev?.needsRebuild) this.state.needsRebuild = true;
   }
 
   /** Side-channel call: own throwaway session built from the context, shared state untouched. */
@@ -178,13 +216,23 @@ export class SessionStore {
     cwd: string,
     customToolNameToSdk?: Map<string, string>,
     modelId?: string,
+    options?: SyncOptions,
   ): SyncResult {
     const priorMessages = messages.slice(0, -1);
+    const rewriteAt = latestHistoryRewrite(priorMessages);
+    // omp compacted (or summarized a branch) after the Claude session was
+    // built: neither resuming it nor a clean start would carry the summary.
+    const historyRewritten =
+      options?.detectHistoryRewrite === true &&
+      this.state !== null &&
+      rewriteAt !== undefined &&
+      rewriteAt > (this.state.rewriteAt ?? Number.NEGATIVE_INFINITY);
 
     // REUSE path
     if (
       this.state &&
       !this.state.needsRebuild &&
+      !historyRewritten &&
       priorMessages.length >= this.state.cursor
     ) {
       const missed = priorMessages.slice(this.state.cursor);
@@ -212,6 +260,7 @@ export class SessionStore {
     if (
       this.state &&
       !this.state.needsRebuild &&
+      !historyRewritten &&
       priorMessages.length < this.state.cursor
     ) {
       debug(
@@ -232,8 +281,12 @@ export class SessionStore {
 
     const previousSessionId = this.state?.sessionId;
     const previousCursor = this.state?.cursor ?? 0;
+    // After a history rewrite the old session may still be written by a query
+    // that is running (or left open) on it: build a new one beside it.
     const preserveId =
-      previousSessionId !== undefined && !this.state?.forceRotate;
+      previousSessionId !== undefined &&
+      !this.state?.forceRotate &&
+      !historyRewritten;
     if (preserveId) {
       deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
     }
@@ -255,8 +308,13 @@ export class SessionStore {
       sessionId: session.sessionId,
       cursor: priorMessages.length,
       cwd,
+      ...(rewriteAt !== undefined ? { rewriteAt } : {}),
     };
-    if (previousSessionId === undefined) {
+    if (historyRewritten) {
+      debug(
+        `Case 4 history rewritten: omp rewrote its history (historyRewriteAt=${rewriteAt}), ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId!.slice(0, 8)}), ${session.messages.length} records`,
+      );
+    } else if (previousSessionId === undefined) {
       debug(
         `Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`,
       );

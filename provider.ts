@@ -241,7 +241,12 @@ export function createStreamClaudeAgentSdk(
           customToolNameToSdk,
           model.id,
         )
-      : sessions.sync(context.messages, cwd, customToolNameToSdk, model.id);
+      : sessions.sync(context.messages, cwd, customToolNameToSdk, model.id, {
+          // Also when reentrant: query state is process-wide, so a query left
+          // open elsewhere (a subagent's) makes every main call look reentrant.
+          // The rebuild goes to a new session, so it never races that query.
+          detectHistoryRewrite: true,
+        });
     queryCtx.ephemeral = Boolean(syncResult.preserveSharedSession);
     const { sessionId: resumeSessionId } = syncResult;
     const promptBlocks = extractUserPromptBlocks(context.messages);
