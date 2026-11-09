@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { Context } from "@earendil-works/pi-ai";
 import { getSessionPath } from "cc-session-io";
-import { SessionStore } from "../session-store.js";
+import { SessionRegistry, SessionStore, sessionKey } from "../session-store.js";
 
 type Messages = Context["messages"];
 
@@ -240,5 +240,26 @@ describe("SessionStore state transitions", () => {
     store.markRebuild();
     store.markAborted();
     expect(store.current).toBeNull();
+  });
+});
+
+describe("SessionRegistry", () => {
+  test("one store per omp session; a side-channel call maps to its parent", () => {
+    const registry = new SessionRegistry();
+    const main = registry.for("omp-1");
+    expect(registry.for("omp-1")).toBe(main);
+    expect(registry.for("omp-1:side:abc123")).toBe(main);
+    expect(registry.for("omp-2")).not.toBe(main);
+    expect(registry.for()).toBe(registry.for(""));
+    expect(sessionKey("omp-1:side:abc123")).toBe("omp-1");
+  });
+
+  test("get does not create, delete forgets", () => {
+    const registry = new SessionRegistry();
+    expect(registry.get("omp-1")).toBeUndefined();
+    expect(registry.size).toBe(0);
+    registry.for("omp-1").commit("sess", 1, projectDir);
+    registry.delete("omp-1");
+    expect(registry.get("omp-1")).toBeUndefined();
   });
 });

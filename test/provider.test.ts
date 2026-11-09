@@ -10,7 +10,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createStreamClaudeAgentSdk } from "../provider.js";
-import { SessionStore } from "../session-store.js";
+import { SessionRegistry } from "../session-store.js";
 import { ctx, resetStack } from "../query-state.js";
 import type { McpResult } from "../extract-tool-results.js";
 import type { BridgeRuntime, QueryFn } from "../runtime.js";
@@ -158,13 +158,14 @@ let handles: FakeQueryHandle[];
 let prevConfigDir: string | undefined;
 
 function makeRuntime(queryFn: QueryFn): BridgeRuntime {
-  const sessions = new SessionStore((message, level) =>
+  const sessions = new SessionRegistry((message, level) =>
     notifications.push({ message, level }),
   );
   return {
     providerSettings: {},
     longContextSettings: { plan: "pro", longContextExtraUsage: false },
     sessions,
+    activeQueryContexts: new Set(),
     ui: {
       notify: (message: string, level: string) =>
         notifications.push({ message, level }),
@@ -278,7 +279,7 @@ describe("fresh query", () => {
       createStreamClaudeAgentSdk(runtime)(MODEL, makeContext([user("hi")])),
     );
 
-    expect(runtime.sessions.current?.sessionId).toBe("sess-cccc3333");
+    expect(runtime.sessions.for().current?.sessionId).toBe("sess-cccc3333");
   });
 
   test("closes the SDK query and clears the active context when done", async () => {
@@ -365,7 +366,7 @@ describe("abort", () => {
       gate,
     );
     runtime = makeRuntime(queryFn);
-    runtime.sessions.commit("sess-ffff6666", 0, claudeDir);
+    runtime.sessions.for().commit("sess-ffff6666", 0, claudeDir);
 
     const options = { signal: controller.signal } as unknown as SimpleStreamOptions;
     const stream = createStreamClaudeAgentSdk(runtime)(
@@ -383,8 +384,8 @@ describe("abort", () => {
     expect(handles[0].interruptCalls).toBeGreaterThan(0);
     expect(events.at(-1)!.type).toBe("error");
     expect(events.at(-1)!.reason).toBe("aborted");
-    expect(runtime.sessions.current?.needsRebuild).toBe(true);
-    expect(runtime.sessions.current?.forceRotate).toBe(true);
+    expect(runtime.sessions.for().current?.needsRebuild).toBe(true);
+    expect(runtime.sessions.for().current?.forceRotate).toBe(true);
     expect(ctx().activeQuery).toBeNull();
   });
 });
@@ -449,7 +450,7 @@ describe("OMP session id: /clear and side-channel calls", () => {
       queryCalls,
     );
     runtime = makeRuntime(queryFn);
-    runtime.sessions.commit("sess-before-clear", 22, claudeDir, "omp-1");
+    runtime.sessions.for("omp-1").commit("sess-before-clear", 22, claudeDir, "omp-1");
 
     await collect(
       createStreamClaudeAgentSdk(runtime)(
@@ -460,8 +461,8 @@ describe("OMP session id: /clear and side-channel calls", () => {
     );
 
     expect(queryCalls[0].options?.resume).toBeUndefined();
-    expect(runtime.sessions.current?.sessionId).toBe("sess-after-clear");
-    expect(runtime.sessions.current?.ompSessionId).toBe("omp-2");
+    expect(runtime.sessions.for("omp-2").current?.sessionId).toBe("sess-after-clear");
+    expect(runtime.sessions.for("omp-2").current?.ompSessionId).toBe("omp-2");
   });
 
   test("tool results of a throwaway query do not move the shared cursor", async () => {
@@ -476,7 +477,7 @@ describe("OMP session id: /clear and side-channel calls", () => {
       gate,
     );
     runtime = makeRuntime(queryFn);
-    runtime.sessions.commit("sess-shared", 22, claudeDir, "omp-1");
+    runtime.sessions.for("omp-1").commit("sess-shared", 22, claudeDir, "omp-1");
     const stream = createStreamClaudeAgentSdk(runtime);
 
     // Shorter context, same OMP session: throwaway query, shared session kept.
@@ -497,13 +498,13 @@ describe("OMP session id: /clear and side-channel calls", () => {
       opts("omp-1"),
     );
 
-    expect(runtime.sessions.current?.sessionId).toBe("sess-shared");
-    expect(runtime.sessions.current?.cursor).toBe(22);
+    expect(runtime.sessions.for("omp-1").current?.sessionId).toBe("sess-shared");
+    expect(runtime.sessions.for("omp-1").current?.cursor).toBe(22);
 
     releaseGate();
     await collect(followUp);
-    expect(runtime.sessions.current?.sessionId).toBe("sess-shared");
-    expect(runtime.sessions.current?.cursor).toBe(22);
+    expect(runtime.sessions.for("omp-1").current?.sessionId).toBe("sess-shared");
+    expect(runtime.sessions.for("omp-1").current?.cursor).toBe(22);
   });
 
   test("a side-channel call runs on its own session and leaves the shared one alone", async () => {
@@ -513,7 +514,7 @@ describe("OMP session id: /clear and side-channel calls", () => {
       queryCalls,
     );
     runtime = makeRuntime(queryFn);
-    runtime.sessions.commit("sess-main", 2, claudeDir, "omp-1");
+    runtime.sessions.for("omp-1").commit("sess-main", 2, claudeDir, "omp-1");
 
     await collect(
       createStreamClaudeAgentSdk(runtime)(
@@ -526,9 +527,9 @@ describe("OMP session id: /clear and side-channel calls", () => {
     const resume = queryCalls[0].options?.resume;
     expect(resume).toBeDefined();
     expect(resume).not.toBe("sess-main");
-    expect(runtime.sessions.current?.sessionId).toBe("sess-main");
-    expect(runtime.sessions.current?.cursor).toBe(2);
-    expect(runtime.sessions.current?.ompSessionId).toBe("omp-1");
+    expect(runtime.sessions.for("omp-1").current?.sessionId).toBe("sess-main");
+    expect(runtime.sessions.for("omp-1").current?.cursor).toBe(2);
+    expect(runtime.sessions.for("omp-1").current?.ompSessionId).toBe("omp-1");
   });
 });
 
@@ -553,7 +554,7 @@ describe("after omp compacted the history", () => {
       queryCalls,
     );
     runtime = makeRuntime(queryFn);
-    runtime.sessions.commit("sess-main", 640, claudeDir, "omp-1");
+    runtime.sessions.for("omp-1").commit("sess-main", 640, claudeDir, "omp-1");
 
     await collect(
       createStreamClaudeAgentSdk(runtime)(
@@ -569,9 +570,9 @@ describe("after omp compacted the history", () => {
     const resume = queryCalls[0].options?.resume;
     expect(resume).toBeDefined();
     expect(resume).not.toBe("sess-main");
-    expect(runtime.sessions.current?.sessionId).toBe("sess-rebuilt");
-    expect(runtime.sessions.current?.rewriteAt).toBe(1000);
-    expect(runtime.sessions.current?.cursor).toBe(2);
+    expect(runtime.sessions.for("omp-1").current?.sessionId).toBe("sess-rebuilt");
+    expect(runtime.sessions.for("omp-1").current?.rewriteAt).toBe(1000);
+    expect(runtime.sessions.for("omp-1").current?.cursor).toBe(2);
   });
 
   test("a query left open elsewhere does not keep the next prompt blank", async () => {
@@ -588,7 +589,7 @@ describe("after omp compacted the history", () => {
       gate,
     );
     runtime = makeRuntime(queryFn);
-    runtime.sessions.commit("sess-main", 640, claudeDir, "omp-1");
+    runtime.sessions.for("omp-1").commit("sess-main", 640, claudeDir, "omp-1");
     const stream = createStreamClaudeAgentSdk(runtime);
 
     const open = stream(MODEL, makeContext([user("elsewhere")]), opts("omp-1"));
@@ -611,5 +612,81 @@ describe("after omp compacted the history", () => {
 
     releaseGate();
     await collect(open);
+  });
+});
+
+describe("several omp sessions in one process (main + subagents)", () => {
+  const opts = (sessionId: string) =>
+    ({ sessionId }) as unknown as SimpleStreamOptions;
+
+  test("a tool result that reaches another provider instance still resolves its query", async () => {
+    // A subagent loads the extension again mid-run: omp then sends the main
+    // session's next tool result to the newly registered provider.
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseGate = r;
+    });
+    const queryFn = recordingQueryFn(
+      [[sysInit("sess-main")]],
+      handles,
+      queryCalls,
+      gate,
+    );
+    runtime = makeRuntime(queryFn);
+    const mainInstance = createStreamClaudeAgentSdk(runtime);
+    const subagentInstance = createStreamClaudeAgentSdk(runtime);
+
+    const first = mainInstance(MODEL, makeContext([user("start")]), opts("omp-main"));
+    await Promise.resolve();
+    let resolved: McpResult | undefined;
+    ctx().pendingToolCalls.set("tc-1", {
+      toolName: "mcp__custom-tools__read",
+      resolve: (r) => {
+        resolved = r;
+      },
+    });
+
+    const followUp = subagentInstance(
+      MODEL,
+      makeContext([
+        user("start"),
+        assistant("calling read"),
+        toolResult("tc-1", "file contents"),
+      ]),
+      opts("omp-main"),
+    );
+
+    expect(resolved).toBeDefined();
+    expect(JSON.stringify(resolved)).toContain("file contents");
+    releaseGate();
+    await collect(followUp);
+    void first;
+  });
+
+  test("a subagent's calls do not evict the main session's Claude session", async () => {
+    const queryFn = recordingQueryFn(
+      [
+        [sysInit("sess-sub"), resultSuccess("sub done")],
+        [sysInit("sess-main"), resultSuccess("main done")],
+      ],
+      handles,
+      queryCalls,
+    );
+    runtime = makeRuntime(queryFn);
+    runtime.sessions.for("omp-main").commit("sess-main", 2, claudeDir, "omp-main");
+    const stream = createStreamClaudeAgentSdk(runtime);
+
+    await collect(stream(MODEL, makeContext([user("sub task")]), opts("omp-sub")));
+    await collect(
+      stream(
+        MODEL,
+        makeContext([user("q1"), assistant("a1"), user("q2")]),
+        opts("omp-main"),
+      ),
+    );
+
+    expect(queryCalls[1].options?.resume).toBe("sess-main");
+    expect(runtime.sessions.for("omp-main").current?.sessionId).toBe("sess-main");
+    expect(runtime.sessions.for("omp-sub").current?.sessionId).toBe("sess-sub");
   });
 });

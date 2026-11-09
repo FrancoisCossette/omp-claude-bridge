@@ -6,7 +6,7 @@ import {
   errorMessage,
   promptAndWait,
 } from "../askclaude.js";
-import { SessionStore } from "../session-store.js";
+import { SessionRegistry } from "../session-store.js";
 import type { ToolCallState } from "../askclaude-ui.js";
 import type { BridgeRuntime, QueryFn } from "../runtime.js";
 
@@ -55,7 +55,8 @@ function makeRuntime(
   return {
     providerSettings: {},
     longContextSettings: { plan: "pro", longContextExtraUsage: false },
-    sessions: new SessionStore(() => {}),
+    sessions: new SessionRegistry(() => {}),
+    activeQueryContexts: new Set(),
     ui: null,
     askClaudeToolName: "AskClaude",
     cachedSystemPrompt: [],

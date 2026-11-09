@@ -4,7 +4,7 @@ import * as os from "os";
 import { join } from "path";
 import registerExtension from "../index.js";
 import { PROVIDER_ID } from "../convert.js";
-import type { BridgeRuntime } from "../runtime.js";
+import { resetSharedRuntime, type BridgeRuntime } from "../runtime.js";
 
 interface FakePi {
   providers: Array<{ id: string; config: Record<string, unknown> }>;
@@ -46,6 +46,7 @@ let prevCwd: string;
 mock.module("os", () => ({ ...os, homedir: () => home }));
 
 beforeEach(() => {
+  resetSharedRuntime();
   home = mkdtempSync(join(os.tmpdir(), "cb-home-"));
   cwd = mkdtempSync(join(os.tmpdir(), "cb-cwd-"));
   prevHome = process.env.HOME;
@@ -103,21 +104,49 @@ describe("extension registration", () => {
 
     expect(runtime.ui).toBe(ui);
     expect(runtime.cachedSystemPrompt).toEqual(["part one", "part two"]);
-    expect(runtime.sessions.current).toBeNull();
+    expect(runtime.sessions.for().current).toBeNull();
   });
 
   test("session_compact / session_tree mark the active session for rebuild", () => {
     const pi = makeFakePi();
     const runtime = load(pi);
-    runtime.sessions.commit("sess-1234", 3, cwd);
-    expect(runtime.sessions.current?.needsRebuild).toBeFalsy();
+    runtime.sessions.for().commit("sess-1234", 3, cwd);
+    expect(runtime.sessions.for().current?.needsRebuild).toBeFalsy();
 
     pi.handlers.session_compact({});
-    expect(runtime.sessions.current?.needsRebuild).toBe(true);
+    expect(runtime.sessions.for().current?.needsRebuild).toBe(true);
 
-    runtime.sessions.commit("sess-1234", 3, cwd);
+    runtime.sessions.for().commit("sess-1234", 3, cwd);
     pi.handlers.session_tree({});
-    expect(runtime.sessions.current?.needsRebuild).toBe(true);
+    expect(runtime.sessions.for().current?.needsRebuild).toBe(true);
+  });
+
+  test("every load shares one runtime; hooks touch their own session only", () => {
+    const main = makeFakePi();
+    const sub = makeFakePi();
+    const runtime = load(main);
+    expect(load(sub)).toBe(runtime);
+    const ui = { notify: () => {} } as unknown as BridgeRuntime["ui"];
+    const ctxOf = (id: string) => ({
+      ui,
+      getSystemPrompt: () => [],
+      sessionManager: { getSessionId: () => id },
+    });
+    runtime.sessions.for("omp-main").commit("sess-main", 3, cwd, "omp-main");
+
+    // The subagent starting used to wipe the main session's state.
+    sub.handlers.session_start({}, ctxOf("omp-sub"));
+    expect(runtime.sessions.for("omp-main").current?.sessionId).toBe("sess-main");
+
+    sub.handlers.session_compact({}, ctxOf("omp-sub"));
+    expect(runtime.sessions.for("omp-main").current?.needsRebuild).toBeFalsy();
+    main.handlers.session_compact({}, ctxOf("omp-main"));
+    expect(runtime.sessions.for("omp-main").current?.needsRebuild).toBe(true);
+
+    runtime.sessions.for("omp-sub").commit("sess-sub", 1, cwd, "omp-sub");
+    sub.handlers.session_shutdown({}, ctxOf("omp-sub"));
+    expect(runtime.sessions.get("omp-sub")).toBeUndefined();
+    expect(runtime.sessions.get("omp-main")?.current?.sessionId).toBe("sess-main");
   });
 
   test("registers the AskClaude tool by default", () => {

@@ -89,6 +89,8 @@ export interface PromptAndWaitOptions {
   thinking?: string;
   isolated?: boolean;
   context?: Context["messages"];
+  /** omp session the call comes from; selects its Claude session state. */
+  ompSessionId?: string;
 }
 
 export async function promptAndWait(
@@ -109,8 +111,9 @@ export async function promptAndWait(
 
   let resumeSessionId: string | null = null;
   if (!options?.isolated && options?.context?.length) {
-    if (runtime.sessions.current) {
-      resumeSessionId = runtime.sessions.current.sessionId;
+    const sessions = runtime.sessions.for(options.ompSessionId);
+    if (sessions.current) {
+      resumeSessionId = sessions.current.sessionId;
     } else {
       const contextWithPrompt = [
         ...options.context,
@@ -120,7 +123,7 @@ export async function promptAndWait(
           timestamp: Date.now(),
         },
       ];
-      const sync = runtime.sessions.sync(
+      const sync = sessions.sync(
         contextWithPrompt as Context["messages"],
         cwd,
         undefined,
@@ -504,6 +507,9 @@ export function registerAskClaudeTool(
             thinking: params.thinking,
             isolated,
             context: undefined,
+            ompSessionId: (
+              ctx as { sessionManager?: { getSessionId?: () => string } }
+            ).sessionManager?.getSessionId?.(),
           },
         );
         clearInterval(progressInterval);
