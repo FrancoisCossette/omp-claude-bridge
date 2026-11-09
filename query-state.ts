@@ -25,6 +25,14 @@ export class QueryContext {
   deferredUserMessages: string[] = [];
   /** Query runs on a throwaway Claude session; must not move the shared cursor. */
   ephemeral = false;
+  /** Latest omp history rewrite (historyRewriteAt) the query was started with. */
+  builtRewriteAt: number | undefined = undefined;
+  /**
+   * Replaced by a query restarted from omp's compacted history: whatever the
+   * old query still does on its way out (interrupted) must touch neither the
+   * omp stream nor the session state.
+   */
+  superseded = false;
 
   // Per-turn (reset together)
   turnOutput: AssistantMessage | null = null;
@@ -86,6 +94,13 @@ export function popContext(): void {
   const parent = contextStack[contextStack.length - 1];
   parent.deferredUserMessages.push(..._ctx.deferredUserMessages);
   _ctx = contextStack.pop()!;
+}
+
+/** Make `next` the current context if `prev` was (a restarted main query). */
+export function replaceContext(prev: QueryContext, next: QueryContext): boolean {
+  if (_ctx !== prev) return false;
+  _ctx = next;
+  return true;
 }
 
 // Test-only: drop all state so test files can start from a clean module.
