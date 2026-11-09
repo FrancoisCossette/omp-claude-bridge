@@ -61,7 +61,11 @@ export type StreamSimpleFn = (
 export function createStreamClaudeAgentSdk(
   runtime: BridgeRuntime,
 ): StreamSimpleFn {
-  const activeQueryContexts = new Set<QueryContext>();
+  // Process-wide, not per provider instance: a subagent loading the extension
+  // re-registers the provider mid-run, and the main session's next tool result
+  // reaches that new instance. With a set of its own, it found no query waiting
+  // for the result, ended the turn empty, and left the main query hanging.
+  const activeQueryContexts: Set<QueryContext> = runtime.activeQueryContexts;
 
   function extractAllToolResults(context: Context): McpResult[] {
     const { results, stopIdx } = _extractAllToolResults(
@@ -92,7 +96,11 @@ export function createStreamClaudeAgentSdk(
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStream {
     const stream = newAssistantMessageEventStream();
-    const sessions = runtime.sessions;
+    const ompSessionId = (options as { sessionId?: string } | undefined)
+      ?.sessionId;
+    // This omp session's state: the main session and its subagents no longer
+    // share (and evict) one Claude session, and /clear (a new id) starts fresh.
+    const sessions = runtime.sessions.for(ompSessionId);
 
     // pi-ai's published Message role union omits "developer", which oh-my-pi's
     // runtime does send; role is a plain string at runtime regardless.
@@ -219,21 +227,11 @@ export function createStreamClaudeAgentSdk(
       resolveMcpTools(context, runtime.askClaudeToolName);
     const cwd =
       (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-    const ompSessionId = (options as { sessionId?: string } | undefined)
-      ?.sessionId;
+    // A side-channel call (title request) shares its parent session's store
+    // but runs on a throwaway Claude session. /clear needs nothing here any
+    // more: it rotates the omp session id, which selects a fresh store.
     const isSideChannel =
       typeof ompSessionId === "string" && ompSessionId.includes(":side:");
-    if (
-      !isSideChannel &&
-      ompSessionId &&
-      sessions.current?.ompSessionId &&
-      sessions.current.ompSessionId !== ompSessionId
-    ) {
-      debug(
-        `provider: OMP session id changed (${sessions.current.ompSessionId} → ${ompSessionId}, e.g. /clear): dropping shared session ${sessions.current.sessionId.slice(0, 8)}`,
-      );
-      sessions.clear();
-    }
     const syncResult = isSideChannel
       ? sessions.syncEphemeral(
           context.messages,

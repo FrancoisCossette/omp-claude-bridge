@@ -62,6 +62,58 @@ export function latestHistoryRewrite(
 
 export type NotifyFn = (message: string, level: "warning" | "error") => void;
 
+/**
+ * The omp session a provider call or a lifecycle hook belongs to. A side-channel
+ * call (`<id>:side:<hex>`) belongs to its parent session; calls without an id
+ * (older omp, tests) share the "" key.
+ */
+export function sessionKey(ompSessionId?: string): string {
+  if (!ompSessionId) return "";
+  const side = ompSessionId.indexOf(":side:");
+  return side === -1 ? ompSessionId : ompSessionId.slice(0, side);
+}
+
+/**
+ * One SessionStore per omp session. omp sends every claude-bridge call of the
+ * process to the provider registered last, and each subagent session loads the
+ * extension again: a single store let the main session and its subagents evict
+ * each other's Claude session, and a subagent's session_start wiped the main
+ * session's state.
+ */
+export class SessionRegistry {
+  private stores = new Map<string, SessionStore>();
+  private notify?: NotifyFn;
+
+  constructor(notify?: NotifyFn) {
+    this.notify = notify;
+  }
+
+  /** The store of this omp session, created on first use. */
+  for(ompSessionId?: string): SessionStore {
+    const key = sessionKey(ompSessionId);
+    let store = this.stores.get(key);
+    if (!store) {
+      store = new SessionStore(this.notify);
+      this.stores.set(key, store);
+    }
+    return store;
+  }
+
+  /** The store of this omp session, if it has one. */
+  get(ompSessionId?: string): SessionStore | undefined {
+    return this.stores.get(sessionKey(ompSessionId));
+  }
+
+  /** Forget this omp session (it started over or shut down). */
+  delete(ompSessionId?: string): void {
+    this.stores.delete(sessionKey(ompSessionId));
+  }
+
+  get size(): number {
+    return this.stores.size;
+  }
+}
+
 function safeRealpath(p: string): string {
   try {
     return realpathSync(p);

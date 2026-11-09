@@ -9,7 +9,7 @@ import { debug } from "./debug.js";
 import { PROVIDER_ID } from "./convert.js";
 import { MODELS, applyLongContext } from "./models.js";
 import { loadConfig } from "./config.js";
-import { createRuntime } from "./runtime.js";
+import { sharedRuntime } from "./runtime.js";
 import { createStreamClaudeAgentSdk } from "./provider.js";
 import { registerAskClaudeTool } from "./askclaude.js";
 import { toPromptArray } from "./prompt.js";
@@ -20,7 +20,8 @@ export default function (pi: ExtensionAPI) {
   const config = loadConfig(process.cwd());
   debug("loadConfig:", JSON.stringify(config));
 
-  const runtime = createRuntime();
+  // Every load (one per subagent session) shares the process-wide runtime.
+  const runtime = sharedRuntime();
   runtime.providerSettings = config.provider ?? {};
   runtime.longContextSettings = {
     plan: runtime.providerSettings.plan ?? "pro",
@@ -32,12 +33,22 @@ export default function (pi: ExtensionAPI) {
   const registeredModels = applyLongContext(MODELS, runtime.longContextSettings);
   const streamClaudeAgentSdk = createStreamClaudeAgentSdk(runtime);
 
-  // Reset shared session on session lifecycle events
-  const clearSession = (event: string) => {
+  // The omp session a hook fires for: hooks touch that session's state only,
+  // never another session's (a subagent's session_start used to wipe the main
+  // session's). Fakes without a sessionManager map to the "" key.
+  const sessionIdOf = (ctx: unknown): string | undefined =>
+    (
+      ctx as
+        | { sessionManager?: { getSessionId?: () => string } }
+        | undefined
+    )?.sessionManager?.getSessionId?.();
+
+  const clearSession = (event: string, ctx: unknown) => {
+    const id = sessionIdOf(ctx);
     debug(
-      `clearSession ${event}: clearing session ${runtime.sessions.current?.sessionId?.slice(0, 8) ?? "none"}`,
+      `clearSession ${event} (omp ${id ?? "?"}): clearing session ${runtime.sessions.get(id)?.current?.sessionId?.slice(0, 8) ?? "none"}`,
     );
-    runtime.sessions.clear();
+    runtime.sessions.delete(id);
   };
 
   // oh-my-pi SessionStartEvent has no `reason` field — clear unconditionally
@@ -46,24 +57,29 @@ export default function (pi: ExtensionAPI) {
     // getSystemPrompt()'s published return type is `string`, but oh-my-pi's
     // runtime returns `string[]`; toPromptArray accepts either.
     runtime.cachedSystemPrompt = toPromptArray(ctx.getSystemPrompt());
-    clearSession("session_start");
+    clearSession("session_start", ctx);
   });
-  pi.on("session_shutdown", () => clearSession("session_shutdown"));
+  pi.on("session_shutdown", (_event, ctx) =>
+    clearSession("session_shutdown", ctx),
+  );
 
   // Compaction takeover skipped — let oh-my-pi's default compaction handle it.
   // See plan: Decision 1 in the port plan.
 
   // oh-my-pi SessionCompactEvent has `compactionEntry` not `reason`/`willRetry`
-  const markRebuild = (event: string) => {
-    if (runtime.sessions.current) {
+  const markRebuild = (event: string, ctx: unknown) => {
+    const store = runtime.sessions.get(sessionIdOf(ctx));
+    if (store?.current) {
       debug(
-        `${event}: marking needsRebuild on session ${runtime.sessions.current.sessionId.slice(0, 8)}`,
+        `${event}: marking needsRebuild on session ${store.current.sessionId.slice(0, 8)}`,
       );
-      runtime.sessions.markRebuild();
+      store.markRebuild();
     }
   };
-  pi.on("session_compact", () => markRebuild("session_compact"));
-  pi.on("session_tree", () => markRebuild("session_tree"));
+  pi.on("session_compact", (_event, ctx) =>
+    markRebuild("session_compact", ctx),
+  );
+  pi.on("session_tree", (_event, ctx) => markRebuild("session_tree", ctx));
 
   // --- Provider ---
   // Always register, even when another bridge instance already did: oh-my-pi's
