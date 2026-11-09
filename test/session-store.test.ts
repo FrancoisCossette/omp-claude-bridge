@@ -16,6 +16,16 @@ const assistant = (text: string) =>
     content: [{ type: "text", text }],
     timestamp: Date.now(),
   }) as Messages[number];
+// What omp sends for a compaction summary: a user message stamped with
+// historyRewriteAt.
+const summary = (text: string, historyRewriteAt: number) =>
+  ({
+    role: "user",
+    content: [{ type: "text", text: `<summary>\n${text}\n</summary>` }],
+    attribution: "agent",
+    historyRewriteAt,
+    timestamp: historyRewriteAt,
+  }) as unknown as Messages[number];
 
 let claudeDir: string;
 let projectDir: string;
@@ -141,6 +151,71 @@ describe("SessionStore.sync", () => {
     const result = store.sync(messages, projectDir);
     expect(result.sessionId).toBeTruthy();
     expect(result.sessionId).not.toBe(originalId);
+  });
+});
+
+describe("SessionStore.sync after omp rewrote its history", () => {
+  const detect = { detectHistoryRewrite: true };
+  const longRun = [user("q1"), assistant("a1"), user("q2")] as Messages;
+
+  test("a compaction since the session was built rebuilds it from the summary", () => {
+    const store = new SessionStore();
+    const { sessionId } = store.sync(longRun, projectDir);
+    // The run went on after a mid-run compaction: the cursor committed at its
+    // end still counts the messages from before it.
+    store.commit(sessionId!, 640, projectDir, "omp-1");
+
+    const compacted = [
+      summary("the code word is HERON", 1000),
+      user("what is the code word?"),
+    ] as Messages;
+    const result = store.sync(compacted, projectDir, undefined, undefined, detect);
+
+    expect(result.preserveSharedSession).toBeUndefined();
+    expect(result.sessionId).toBe(sessionId);
+    expect(store.current?.cursor).toBe(1);
+    expect(store.current?.rewriteAt).toBe(1000);
+    const jsonl = readFileSync(
+      getSessionPath(sessionId!, projectDir, claudeDir),
+      "utf8",
+    );
+    expect(jsonl).toContain("HERON");
+    expect(jsonl).not.toContain("q1");
+  });
+
+  test("the rewrite the session was built from does not rebuild it again", () => {
+    const store = new SessionStore();
+    const compacted = [
+      summary("the code word is HERON", 1000),
+      user("what is the code word?"),
+    ] as Messages;
+    const { sessionId } = store.sync(compacted, projectDir, undefined, undefined, detect);
+    store.commit(sessionId!, 10, projectDir, "omp-1");
+
+    // Shorter than the cursor but no newer rewrite: still a throwaway query.
+    const result = store.sync(compacted, projectDir, undefined, undefined, detect);
+    expect(result).toEqual({ sessionId: null, preserveSharedSession: true });
+  });
+
+  test("without detection (a query is running) a rewrite is left alone", () => {
+    const store = new SessionStore();
+    const { sessionId } = store.sync(longRun, projectDir);
+    store.commit(sessionId!, 640, projectDir, "omp-1");
+
+    const compacted = [summary("s", 1000), user("next")] as Messages;
+    const result = store.sync(compacted, projectDir);
+    expect(result).toEqual({ sessionId: null, preserveSharedSession: true });
+    expect(store.current?.cursor).toBe(640);
+  });
+
+  test("commit keeps the rewrite stamp and a rebuild requested mid-run", () => {
+    const store = new SessionStore();
+    const compacted = [summary("s", 1000), user("next")] as Messages;
+    const { sessionId } = store.sync(compacted, projectDir, undefined, undefined, detect);
+    store.markRebuild();
+    store.commit(sessionId!, 5, projectDir, "omp-1");
+    expect(store.current?.rewriteAt).toBe(1000);
+    expect(store.current?.needsRebuild).toBe(true);
   });
 });
 

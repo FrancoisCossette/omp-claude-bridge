@@ -241,7 +241,11 @@ export function createStreamClaudeAgentSdk(
           customToolNameToSdk,
           model.id,
         )
-      : sessions.sync(context.messages, cwd, customToolNameToSdk, model.id);
+      : sessions.sync(context.messages, cwd, customToolNameToSdk, model.id, {
+          // A reentrant query runs while another is still writing the shared
+          // session: never rewrite its file from under it.
+          detectHistoryRewrite: !isReentrant,
+        });
     queryCtx.ephemeral = Boolean(syncResult.preserveSharedSession);
     const { sessionId: resumeSessionId } = syncResult;
     const promptBlocks = extractUserPromptBlocks(context.messages);

@@ -531,3 +531,44 @@ describe("OMP session id: /clear and side-channel calls", () => {
     expect(runtime.sessions.current?.ompSessionId).toBe("omp-1");
   });
 });
+
+describe("after omp compacted the history", () => {
+  const opts = (sessionId: string) =>
+    ({ sessionId }) as unknown as SimpleStreamOptions;
+  const summary = (text: string, historyRewriteAt: number) =>
+    ({
+      role: "user",
+      content: [{ type: "text", text: `<summary>\n${text}\n</summary>` }],
+      attribution: "agent",
+      historyRewriteAt,
+      timestamp: historyRewriteAt,
+    }) as unknown as Messages[number];
+
+  test("the next prompt resumes a session rebuilt from the summary, not a blank one", async () => {
+    // Seen on 2026-11-07: a run compacted mid-way ended with the cursor of
+    // ~640 messages; the next prompt (summary + 1 message) started blank.
+    const queryFn = recordingQueryFn(
+      [[sysInit("sess-main"), resultSuccess("HERON")]],
+      handles,
+      queryCalls,
+    );
+    runtime = makeRuntime(queryFn);
+    runtime.sessions.commit("sess-main", 640, claudeDir, "omp-1");
+
+    await collect(
+      createStreamClaudeAgentSdk(runtime)(
+        MODEL,
+        makeContext([
+          summary("the code word is HERON", 1000),
+          user("what is the code word?"),
+        ]),
+        opts("omp-1"),
+      ),
+    );
+
+    expect(queryCalls[0].options?.resume).toBe("sess-main");
+    expect(runtime.sessions.current?.sessionId).toBe("sess-main");
+    expect(runtime.sessions.current?.rewriteAt).toBe(1000);
+    expect(runtime.sessions.current?.cursor).toBe(2);
+  });
+});
