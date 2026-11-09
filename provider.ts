@@ -242,9 +242,10 @@ export function createStreamClaudeAgentSdk(
           model.id,
         )
       : sessions.sync(context.messages, cwd, customToolNameToSdk, model.id, {
-          // A reentrant query runs while another is still writing the shared
-          // session: never rewrite its file from under it.
-          detectHistoryRewrite: !isReentrant,
+          // Also when reentrant: query state is process-wide, so a query left
+          // open elsewhere (a subagent's) makes every main call look reentrant.
+          // The rebuild goes to a new session, so it never races that query.
+          detectHistoryRewrite: true,
         });
     queryCtx.ephemeral = Boolean(syncResult.preserveSharedSession);
     const { sessionId: resumeSessionId } = syncResult;

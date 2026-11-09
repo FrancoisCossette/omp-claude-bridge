@@ -158,12 +158,12 @@ describe("SessionStore.sync after omp rewrote its history", () => {
   const detect = { detectHistoryRewrite: true };
   const longRun = [user("q1"), assistant("a1"), user("q2")] as Messages;
 
-  test("a compaction since the session was built rebuilds it from the summary", () => {
+  test("a compaction since the session was built rebuilds a new session from the summary", () => {
     const store = new SessionStore();
-    const { sessionId } = store.sync(longRun, projectDir);
+    const { sessionId: oldId } = store.sync(longRun, projectDir);
     // The run went on after a mid-run compaction: the cursor committed at its
     // end still counts the messages from before it.
-    store.commit(sessionId!, 640, projectDir, "omp-1");
+    store.commit(oldId!, 640, projectDir, "omp-1");
 
     const compacted = [
       summary("the code word is HERON", 1000),
@@ -172,15 +172,19 @@ describe("SessionStore.sync after omp rewrote its history", () => {
     const result = store.sync(compacted, projectDir, undefined, undefined, detect);
 
     expect(result.preserveSharedSession).toBeUndefined();
-    expect(result.sessionId).toBe(sessionId);
+    expect(result.sessionId).toBeTruthy();
+    expect(result.sessionId).not.toBe(oldId);
+    expect(store.current?.sessionId).toBe(result.sessionId!);
     expect(store.current?.cursor).toBe(1);
     expect(store.current?.rewriteAt).toBe(1000);
     const jsonl = readFileSync(
-      getSessionPath(sessionId!, projectDir, claudeDir),
+      getSessionPath(result.sessionId!, projectDir, claudeDir),
       "utf8",
     );
     expect(jsonl).toContain("HERON");
     expect(jsonl).not.toContain("q1");
+    // The old file is left to whatever query may still write it.
+    expect(existsSync(getSessionPath(oldId!, projectDir, claudeDir))).toBe(true);
   });
 
   test("the rewrite the session was built from does not rebuild it again", () => {
@@ -197,7 +201,7 @@ describe("SessionStore.sync after omp rewrote its history", () => {
     expect(result).toEqual({ sessionId: null, preserveSharedSession: true });
   });
 
-  test("without detection (a query is running) a rewrite is left alone", () => {
+  test("without detection a rewrite is left alone", () => {
     const store = new SessionStore();
     const { sessionId } = store.sync(longRun, projectDir);
     store.commit(sessionId!, 640, projectDir, "omp-1");

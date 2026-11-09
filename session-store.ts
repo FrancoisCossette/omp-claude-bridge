@@ -39,8 +39,8 @@ export interface SyncResult {
 export interface SyncOptions {
   /**
    * Rebuild when omp rewrote its history since the Claude session was built.
-   * Only safe when no query is running on the shared session: a rebuild
-   * rewrites its file in place.
+   * The rebuild goes to a new Claude session and leaves the old file alone, so
+   * it is safe even while another query still writes that file.
    */
   detectHistoryRewrite?: boolean;
 }
@@ -281,8 +281,12 @@ export class SessionStore {
 
     const previousSessionId = this.state?.sessionId;
     const previousCursor = this.state?.cursor ?? 0;
+    // After a history rewrite the old session may still be written by a query
+    // that is running (or left open) on it: build a new one beside it.
     const preserveId =
-      previousSessionId !== undefined && !this.state?.forceRotate;
+      previousSessionId !== undefined &&
+      !this.state?.forceRotate &&
+      !historyRewritten;
     if (preserveId) {
       deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
     }
@@ -308,10 +312,9 @@ export class SessionStore {
     };
     if (historyRewritten) {
       debug(
-        `Case 4 history rewritten: omp rewrote its history (historyRewriteAt=${rewriteAt}), ${priorMessages.length} total → rebuilt session ${session.sessionId.slice(0, 8)}`,
+        `Case 4 history rewritten: omp rewrote its history (historyRewriteAt=${rewriteAt}), ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId!.slice(0, 8)}), ${session.messages.length} records`,
       );
-    }
-    if (previousSessionId === undefined) {
+    } else if (previousSessionId === undefined) {
       debug(
         `Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`,
       );
